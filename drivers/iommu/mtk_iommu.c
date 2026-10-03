@@ -1974,6 +1974,8 @@ static int mtk_iommu_of_xlate(struct device *dev, struct of_phandle_args *args)
 			return -EINVAL;
 
 		dev_iommu_priv_set(dev, platform_get_drvdata(m4updev));
+
+		put_device(&m4updev->dev);
 	}
 
 	return iommu_fwspec_add_ids(dev, args->args, 1);
@@ -2663,7 +2665,7 @@ static int mtk_iommu_probe(struct platform_device *pdev)
 		}
 	}
 
-	/*
+/*
 	 * Note: we must be find iommu bank from bank1;
 	 * And if iommu upstream, we need to merged with bank0.
 	 */
@@ -2722,6 +2724,14 @@ out:
 		if (IS_ERR(data->bclk)) {
 			dev_err(dev, "%s,get clk failed\n", __func__);
 			return PTR_ERR(data->bclk);
+		}
+	}
+
+	if (MTK_IOMMU_HAS_FLAG(data->plat_data, PGTABLE_PA_35_EN)) {
+		ret = dma_set_mask(dev, DMA_BIT_MASK(35));
+		if (ret) {
+			dev_err(dev, "Failed to set dma_mask 35.\n");
+			return ret;
 		}
 	}
 
@@ -3767,6 +3777,7 @@ static const struct of_device_id mtk_iommu_of_ids[] = {
 	{ .compatible = "mediatek,mt8192-m4u", .data = &mt8192_data},
 	{}
 };
+MODULE_DEVICE_TABLE(of, mtk_iommu_of_ids);
 
 static struct platform_driver mtk_iommu_driver = {
 	.probe	= mtk_iommu_probe,

@@ -196,9 +196,6 @@ enum cpt_eng_type {
 	CPT_IE_TYPE = 3,
 };
 
-#define NDC_MAX_BANK(rvu, blk_addr) (rvu_read64(rvu, \
-						blk_addr, NDC_AF_CONST) & 0xFF)
-
 #define rvu_dbg_NULL NULL
 #define rvu_dbg_open_NULL NULL
 
@@ -562,11 +559,9 @@ static ssize_t rvu_dbg_qsize_write(struct file *filp,
 	u16 pcifunc;
 	int ret, lf;
 
-	cmd_buf = memdup_user(buffer, count + 1);
+	cmd_buf = memdup_user_nul(buffer, count);
 	if (IS_ERR(cmd_buf))
 		return -ENOMEM;
-
-	cmd_buf[count] = '\0';
 
 	cmd_buf_tmp = strchr(cmd_buf, '\n');
 	if (cmd_buf_tmp) {
@@ -1009,6 +1004,7 @@ static int ndc_blk_hits_miss_stats(struct seq_file *s, int idx, int blk_addr)
 	struct nix_hw *nix_hw;
 	struct rvu *rvu;
 	int bank, max_bank;
+	u64 ndc_af_const;
 
 	if (blk_addr == BLKADDR_NDC_NPA0) {
 		rvu = s->private;
@@ -1017,7 +1013,8 @@ static int ndc_blk_hits_miss_stats(struct seq_file *s, int idx, int blk_addr)
 		rvu = nix_hw->rvu;
 	}
 
-	max_bank = NDC_MAX_BANK(rvu, blk_addr);
+	ndc_af_const = rvu_read64(rvu, blk_addr, NDC_AF_CONST);
+	max_bank = FIELD_GET(NDC_AF_BANK_MASK, ndc_af_const);
 	for (bank = 0; bank < max_bank; bank++) {
 		seq_printf(s, "BANK:%d\n", bank);
 		seq_printf(s, "\tHits:\t%lld\n",
@@ -2320,6 +2317,12 @@ static void rvu_dbg_npc_mcam_show_flows(struct seq_file *s,
 	for_each_set_bit(bit, (unsigned long *)&rule->features, 64) {
 		seq_printf(s, "\t%s  ", npc_get_field_name(bit));
 		switch (bit) {
+		case NPC_LXMB:
+			if (rule->lxmb == 1)
+				seq_puts(s, "\tL2M nibble is set\n");
+			else
+				seq_puts(s, "\tL2B nibble is set\n");
+			break;
 		case NPC_DMAC:
 			seq_printf(s, "%pM ", rule->packet.dmac);
 			seq_printf(s, "mask %pM\n", rule->mask.dmac);
@@ -2487,6 +2490,8 @@ static int rvu_dbg_npc_mcam_show_rules(struct seq_file *s, void *unused)
 				seq_printf(s, "VF%d", vf);
 			}
 			seq_puts(s, "\n");
+			seq_printf(s, "\tchannel: 0x%x\n", iter->chan);
+			seq_printf(s, "\tchannel_mask: 0x%x\n", iter->chan_mask);
 		}
 
 		rvu_dbg_npc_mcam_show_action(s, iter);

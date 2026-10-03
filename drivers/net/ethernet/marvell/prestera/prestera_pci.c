@@ -616,6 +616,9 @@ static int prestera_fw_hdr_parse(struct prestera_fw *fw)
 	struct prestera_fw_header *hdr;
 	u32 magic;
 
+	if (fw->bin->size < sizeof(*hdr))
+		return -EINVAL;
+
 	hdr = (struct prestera_fw_header *)fw->bin->data;
 
 	magic = be32_to_cpu(hdr->magic_number);
@@ -645,7 +648,8 @@ pick_fw_ver:
 
 	err = request_firmware_direct(&fw->bin, fw_path, fw->dev.dev);
 	if (err) {
-		if (ver_maj == PRESTERA_SUPP_FW_MAJ_VER) {
+		if (ver_maj != PRESTERA_PREV_FW_MAJ_VER ||
+		    ver_min != PRESTERA_PREV_FW_MIN_VER) {
 			ver_maj = PRESTERA_PREV_FW_MAJ_VER;
 			ver_min = PRESTERA_PREV_FW_MIN_VER;
 

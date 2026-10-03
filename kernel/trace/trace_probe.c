@@ -64,7 +64,7 @@ int PRINT_TYPE_FUNC_NAME(string)(struct trace_seq *s, void *data, void *ent)
 	int len = *(u32 *)data >> 16;
 
 	if (!len)
-		trace_seq_puts(s, "(fault)");
+		trace_seq_puts(s, FAULT_STRING);
 	else
 		trace_seq_printf(s, "\"%s\"",
 				 (const char *)get_loc_data(data, ent));
@@ -76,9 +76,11 @@ const char PRINT_TYPE_FMT_NAME(string)[] = "\\\"%s\\\"";
 /* Fetch type information table */
 static const struct fetch_type probe_fetch_types[] = {
 	/* Special types */
-	__ASSIGN_FETCH_TYPE("string", string, string, sizeof(u32), 1,
+	__ASSIGN_FETCH_TYPE("string", string, string, sizeof(u32), 1, 1,
 			    "__data_loc char[]"),
-	__ASSIGN_FETCH_TYPE("ustring", string, string, sizeof(u32), 1,
+	__ASSIGN_FETCH_TYPE("ustring", string, string, sizeof(u32), 1, 1,
+			    "__data_loc char[]"),
+	__ASSIGN_FETCH_TYPE("symstr", string, string, sizeof(u32), 1, 1,
 			    "__data_loc char[]"),
 	/* Basic types */
 	ASSIGN_FETCH_TYPE(u8,  u8,  0),
@@ -141,9 +143,12 @@ fail:
 }
 
 static struct trace_probe_log trace_probe_log;
+extern struct mutex dyn_event_ops_mutex;
 
 void trace_probe_log_init(const char *subsystem, int argc, const char **argv)
 {
+	lockdep_assert_held(&dyn_event_ops_mutex);
+
 	trace_probe_log.subsystem = subsystem;
 	trace_probe_log.argc = argc;
 	trace_probe_log.argv = argv;
@@ -152,11 +157,15 @@ void trace_probe_log_init(const char *subsystem, int argc, const char **argv)
 
 void trace_probe_log_clear(void)
 {
+	lockdep_assert_held(&dyn_event_ops_mutex);
+
 	memset(&trace_probe_log, 0, sizeof(trace_probe_log));
 }
 
 void trace_probe_log_set_index(int index)
 {
+	lockdep_assert_held(&dyn_event_ops_mutex);
+
 	trace_probe_log.index = index;
 }
 
@@ -165,7 +174,9 @@ void __trace_probe_log_err(int offset, int err_type)
 	char *command, *p;
 	int i, len = 0, pos = 0;
 
-	if (!trace_probe_log.argv)
+	lockdep_assert_held(&dyn_event_ops_mutex);
+
+	if (!trace_probe_log.argv || !trace_probe_log.argc)
 		return;
 
 	/* Recalculate the length and allocate buffer */
@@ -259,7 +270,7 @@ int traceprobe_parse_event_name(const char **pevent, const char **pgroup,
 	if (len == 0) {
 		trace_probe_log_err(offset, NO_EVENT_NAME);
 		return -EINVAL;
-	} else if (len > MAX_EVENT_NAME_LEN) {
+	} else if (len >= MAX_EVENT_NAME_LEN) {
 		trace_probe_log_err(offset, EVENT_TOO_LONG);
 		return -EINVAL;
 	}
@@ -351,7 +362,7 @@ static int __parse_imm_string(char *str, char **pbuf, int offs)
 {
 	size_t len = strlen(str);
 
-	if (str[len - 1] != '"') {
+	if (!len || str[len - 1] != '"') {
 		trace_probe_log_err(offs + len, IMMSTR_NO_CLOSE);
 		return -EINVAL;
 	}
@@ -418,6 +429,7 @@ parse_probe_arg(char *arg, const struct fetch_type *type,
 
 			code->op = FETCH_OP_FOFFS;
 			code->immediate = (unsigned long)offset;  // imm64?
+			offset = 0;
 		} else {
 			/* uprobes don't support symbols */
 			if (!(flags & TPARG_FL_KERNEL)) {
@@ -518,8 +530,6 @@ parse_probe_arg(char *arg, const struct fetch_type *type,
 	}
 	return ret;
 }
-
-#define BYTES_TO_BITS(nb)	((BITS_PER_LONG * (nb)) / sizeof(long))
 
 /* Bitfield type needs to be parsed into a fetch function */
 static int __parse_bitfield_probe_arg(const char *bf,
@@ -636,6 +646,12 @@ static int traceprobe_parse_probe_arg_body(const char *argv, ssize_t *size,
 	parg->offset = *size;
 	*size += parg->type->size * (parg->count ?: 1);
 
+	if (*size > MAX_PROBE_EVENT_SIZE) {
+		ret = -E2BIG;
+		trace_probe_log_err(offset, EVENT_TOO_BIG);
+		goto out;
+	}
+
 	ret = -ENOMEM;
 	if (parg->count) {
 		len = strlen(parg->type->fmttype) + 6;
@@ -658,16 +674,26 @@ static int traceprobe_parse_probe_arg_body(const char *argv, ssize_t *size,
 
 	ret = -EINVAL;
 	/* Store operation */
-	if (!strcmp(parg->type->name, "string") ||
-	    !strcmp(parg->type->name, "ustring")) {
-		if (code->op != FETCH_OP_DEREF && code->op != FETCH_OP_UDEREF &&
-		    code->op != FETCH_OP_IMM && code->op != FETCH_OP_COMM &&
-		    code->op != FETCH_OP_DATA && code->op != FETCH_OP_TP_ARG) {
-			trace_probe_log_err(offset + (t ? (t - arg) : 0),
-					    BAD_STRING);
-			goto fail;
+	if (parg->type->is_string) {
+		if (!strcmp(parg->type->name, "symstr")) {
+			if (code->op != FETCH_OP_REG && code->op != FETCH_OP_STACK &&
+			    code->op != FETCH_OP_RETVAL && code->op != FETCH_OP_ARG &&
+			    code->op != FETCH_OP_DEREF && code->op != FETCH_OP_TP_ARG) {
+				trace_probe_log_err(offset + (t ? (t - arg) : 0),
+						    BAD_SYMSTRING);
+				goto fail;
+			}
+		} else {
+			if (code->op != FETCH_OP_DEREF && code->op != FETCH_OP_UDEREF &&
+			    code->op != FETCH_OP_IMM && code->op != FETCH_OP_COMM &&
+			    code->op != FETCH_OP_DATA && code->op != FETCH_OP_TP_ARG) {
+				trace_probe_log_err(offset + (t ? (t - arg) : 0),
+						    BAD_STRING);
+				goto fail;
+			}
 		}
-		if ((code->op == FETCH_OP_IMM || code->op == FETCH_OP_COMM ||
+		if (!strcmp(parg->type->name, "symstr") ||
+		    (code->op == FETCH_OP_IMM || code->op == FETCH_OP_COMM ||
 		     code->op == FETCH_OP_DATA) || code->op == FETCH_OP_TP_ARG ||
 		     parg->count) {
 			/*
@@ -675,6 +701,8 @@ static int traceprobe_parse_probe_arg_body(const char *argv, ssize_t *size,
 			 * must be kept, and if parg->count != 0, this is an
 			 * array of string pointers instead of string address
 			 * itself.
+			 * For the symstr, it doesn't need to dereference, thus
+			 * it just get the value.
 			 */
 			code++;
 			if (code->op != FETCH_OP_NOP) {
@@ -686,6 +714,8 @@ static int traceprobe_parse_probe_arg_body(const char *argv, ssize_t *size,
 		if (!strcmp(parg->type->name, "ustring") ||
 		    code->op == FETCH_OP_UDEREF)
 			code->op = FETCH_OP_ST_USTRING;
+		else if (!strcmp(parg->type->name, "symstr"))
+			code->op = FETCH_OP_ST_SYMSTR;
 		else
 			code->op = FETCH_OP_ST_STRING;
 		code->size = parg->type->size;
@@ -866,7 +896,7 @@ int traceprobe_update_arg(struct probe_arg *arg)
 }
 
 /* When len=0, we just calculate the needed length */
-#define LEN_OR_ZERO (len ? len - pos : 0)
+#define LEN_OR_ZERO (len > pos ? len - pos : 0)
 static int __set_print_fmt(struct trace_probe *tp, char *buf, int len,
 			   enum probe_print_type ptype)
 {
@@ -915,8 +945,7 @@ static int __set_print_fmt(struct trace_probe *tp, char *buf, int len,
 	for (i = 0; i < tp->nr_args; i++) {
 		parg = tp->args + i;
 		if (parg->count) {
-			if ((strcmp(parg->type->name, "string") == 0) ||
-			    (strcmp(parg->type->name, "ustring") == 0))
+			if (parg->type->is_string)
 				fmt = ", __get_str(%s[%d])";
 			else
 				fmt = ", REC->%s[%d]";
@@ -924,8 +953,7 @@ static int __set_print_fmt(struct trace_probe *tp, char *buf, int len,
 				pos += snprintf(buf + pos, LEN_OR_ZERO,
 						fmt, parg->name, j);
 		} else {
-			if ((strcmp(parg->type->name, "string") == 0) ||
-			    (strcmp(parg->type->name, "ustring") == 0))
+			if (parg->type->is_string)
 				fmt = ", __get_str(%s)";
 			else
 				fmt = ", REC->%s";
@@ -1184,16 +1212,17 @@ int trace_probe_compare_arg_type(struct trace_probe *a, struct trace_probe *b)
 bool trace_probe_match_command_args(struct trace_probe *tp,
 				    int argc, const char **argv)
 {
-	char buf[MAX_ARGSTR_LEN + 1];
 	int i;
 
 	if (tp->nr_args < argc)
 		return false;
 
 	for (i = 0; i < argc; i++) {
-		snprintf(buf, sizeof(buf), "%s=%s",
-			 tp->args[i].name, tp->args[i].comm);
-		if (strcmp(buf, argv[i]))
+		int len = strlen(tp->args[i].name);
+
+		if (strncmp(argv[i], tp->args[i].name, len) ||
+		    argv[i][len] != '=' ||
+		    strcmp(argv[i] + len + 1, tp->args[i].comm))
 			return false;
 	}
 	return true;

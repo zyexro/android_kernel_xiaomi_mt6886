@@ -10,9 +10,11 @@
 #include <linux/iopoll.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/of_address.h>
+#include <linux/of.h>
 #include <linux/of_platform.h>
 #include <linux/pm_qos.h>
+#include <linux/platform_device.h>
+#include <linux/regulator/consumer.h>
 #include <linux/slab.h>
 #include <linux/sched/clock.h>
 #if defined(CONFIG_TRACEPOINTS) && defined(CONFIG_ANDROID_VENDOR_HOOKS)
@@ -369,6 +371,10 @@ static int mtk_cpu_resources_init(struct platform_device *pdev,
 
 static int mtk_cpufreq_hw_driver_probe(struct platform_device *pdev)
 {
+	const void *data;
+	int ret, cpu;
+	struct device *cpu_dev;
+	struct regulator *cpu_reg;
 	struct device_node *cpu_np;
 	struct device_node *hvfs_node;
 	struct of_phandle_args args;
@@ -377,7 +383,19 @@ static int mtk_cpufreq_hw_driver_probe(struct platform_device *pdev)
 	static void __iomem *csram_base;
 	const u16 *offsets;
 	unsigned int cpu;
-	int ret;
+
+	/* Make sure that all CPU supplies are available before proceeding. */
+	for_each_possible_cpu(cpu) {
+		cpu_dev = get_cpu_device(cpu);
+		if (!cpu_dev)
+			return dev_err_probe(&pdev->dev, -EPROBE_DEFER,
+					     "Failed to get cpu%d device\n", cpu);
+
+		cpu_reg = devm_regulator_get(cpu_dev, "cpu");
+		if (IS_ERR(cpu_reg))
+			return dev_err_probe(&pdev->dev, PTR_ERR(cpu_reg),
+					     "CPU%d regulator get failed\n", cpu);
+	}
 
 	offsets = of_device_get_match_data(&pdev->dev);
 	if (!offsets)

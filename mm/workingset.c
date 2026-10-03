@@ -16,6 +16,7 @@
 #include <linux/dax.h>
 #include <linux/fs.h>
 #include <linux/mm.h>
+#include <trace/hooks/mm.h>
 
 /*
  *		Double CLOCK lists
@@ -272,6 +273,8 @@ static void lru_gen_refault(struct page *page, void *shadow)
 	lruvec = mem_cgroup_lruvec(memcg, pgdat);
 	lrugen = &lruvec->lrugen;
 
+	mod_lruvec_state(lruvec, WORKINGSET_REFAULT_BASE + type, delta);
+
 	min_seq = READ_ONCE(lrugen->min_seq[type]);
 	if ((token >> LRU_REFS_WIDTH) != (min_seq & (EVICTION_MASK >> LRU_REFS_WIDTH)))
 		goto unlock;
@@ -282,7 +285,7 @@ static void lru_gen_refault(struct page *page, void *shadow)
 	tier = lru_tier_from_refs(refs);
 
 	atomic_long_add(delta, &lrugen->refaulted[hist][type][tier]);
-	mod_lruvec_state(lruvec, WORKINGSET_REFAULT_BASE + type, delta);
+	mod_lruvec_state(lruvec, WORKINGSET_ACTIVATE_BASE + type, delta);
 
 	/*
 	 * Count the following two cases as stalls:
@@ -396,6 +399,8 @@ void workingset_refault(struct page *page, void *shadow)
 	bool workingset;
 	int memcgid;
 
+	trace_android_vh_count_workingset_refault(page);
+
 	if (lru_gen_enabled()) {
 		lru_gen_refault(page, shadow);
 		return;
@@ -403,6 +408,9 @@ void workingset_refault(struct page *page, void *shadow)
 
 	unpack_shadow(shadow, &memcgid, &pgdat, &eviction, &workingset);
 	eviction <<= bucket_order;
+
+	/* Flush stats (and potentially sleep) before holding RCU read lock */
+	mem_cgroup_flush_stats_ratelimited();
 
 	rcu_read_lock();
 	/*
@@ -457,8 +465,6 @@ void workingset_refault(struct page *page, void *shadow)
 	lruvec = mem_cgroup_lruvec(memcg, pgdat);
 
 	inc_lruvec_state(lruvec, WORKINGSET_REFAULT_BASE + file);
-
-	mem_cgroup_flush_stats_delayed();
 	/*
 	 * Compare the distance to the existing workingset size. We
 	 * don't activate pages that couldn't stay resident even if

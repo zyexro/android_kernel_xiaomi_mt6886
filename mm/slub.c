@@ -882,7 +882,12 @@ void object_err(struct kmem_cache *s, struct page *page,
 		return;
 
 	slab_bug(s, "%s", reason);
-	print_trailer(s, page, object);
+	if (!object || !check_valid_pointer(s, page, object)) {
+		print_page_info(page);
+		pr_err("Invalid pointer 0x%p\n", object);
+	} else {
+		print_trailer(s, page, object);
+	}
 	add_taint(TAINT_BAD_PAGE, LOCKDEP_NOW_UNRELIABLE);
 }
 
@@ -1793,6 +1798,8 @@ static inline struct page *alloc_slab_page(struct kmem_cache *s,
 		page = alloc_pages(flags, order);
 	else
 		page = __alloc_pages_node(node, flags, order);
+
+	trace_android_vh_slab_page_alloced(page, s->size, flags);
 
 	return page;
 }
@@ -3237,6 +3244,8 @@ redo:
 out:
 	slab_post_alloc_hook(s, objcg, gfpflags, 1, &object, init);
 
+	trace_android_vh_slab_alloc_node(object, addr, s);
+
 	return object;
 }
 
@@ -3516,6 +3525,8 @@ static __always_inline void slab_free(struct kmem_cache *s, struct page *page,
 	 */
 	if (slab_free_freelist_hook(s, &head, &tail, &cnt))
 		do_slab_free(s, page, head, tail, cnt, addr);
+
+	trace_android_vh_slab_free(addr, s);
 }
 
 #ifdef CONFIG_KASAN_GENERIC

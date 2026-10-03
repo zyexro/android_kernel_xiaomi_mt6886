@@ -45,10 +45,8 @@
 #define VFF_STOP_CLR_B		0
 #define VFF_EN_CLR_B		0
 #define VFF_INT_EN_CLR_B	0
-#define VFF_4G_SUPPORT_CLR_B	0
-#define VFF_ORI_ADDR_BITS_NUM    32
-#define VFF_RX_FLOWCTL_THRE_SIZE 0xc00
-#define VFF_RX_TRANS_FINISH_MASK 0x7F  /*bit 0~7*/
+#define VFF_ADDR2_CLR_B		0
+
 /*
  * interrupt trigger level for tx
  * if threshold is n, no polling is required to start tx.
@@ -80,7 +78,7 @@
 /* TX: the buffer size SW can write. RX: the buffer size HW can write. */
 #define VFF_LEFT_SIZE		0x40
 #define VFF_DEBUG_STATUS	0x50
-#define VFF_4G_SUPPORT		0x54
+#define VFF_ADDR2		0x54
 
 #define UART_RECORD_COUNT	5
 #define MAX_POLLING_CNT		5000
@@ -115,6 +113,7 @@ struct mtk_uart_apdmadev {
 	unsigned int support_bits;
 	unsigned int dma_requests;
 	unsigned int support_hub;
+	bool support_33bits;
 };
 
 static unsigned int clk_count;
@@ -485,9 +484,8 @@ static void mtk_uart_apdma_start_tx(struct mtk_chan *c)
 		mtk_uart_apdma_write(c, VFF_WPT, 0);
 		mtk_uart_apdma_write(c, VFF_INT_FLAG, VFF_TX_INT_CLR_B);
 
-		if (mtkd->support_bits > VFF_ORI_ADDR_BITS_NUM)
-			mtk_uart_apdma_write(c, VFF_4G_SUPPORT,
-					upper_32_bits(d->addr));
+		if (mtkd->support_33bits)
+			mtk_uart_apdma_write(c, VFF_ADDR2, upper_32_bits(d->addr));
 	}
 
 	mtk_uart_apdma_write(c, VFF_EN, VFF_EN_B);
@@ -567,9 +565,8 @@ static void mtk_uart_apdma_start_rx(struct mtk_chan *c)
 		mtk_uart_apdma_write(c, VFF_RPT, 0);
 		mtk_uart_apdma_write(c, VFF_INT_FLAG, VFF_RX_INT_CLR_B);
 
-		if (mtkd->support_bits > VFF_ORI_ADDR_BITS_NUM)
-			mtk_uart_apdma_write(c, VFF_4G_SUPPORT,
-					upper_32_bits(d->addr));
+if (mtkd->support_33bits)
+			mtk_uart_apdma_write(c, VFF_ADDR2, upper_32_bits(d->addr));
 	}
 
 	mtk_uart_apdma_write(c, VFF_RX_FLOWCTL_THRE, VFF_RX_FLOWCTL_THRE_SIZE);
@@ -821,7 +818,7 @@ static int mtk_uart_apdma_alloc_chan_resources(struct dma_chan *chan)
 		goto err_pm;
 	}
 
-	ret = enable_irq_wake(c->irq);
+ret = enable_irq_wake(c->irq);
 	if (ret) {
 		dev_info(chan->device->dev, "Can't enable dma IRQ wake\n");
 		ret = -EINVAL;
@@ -838,8 +835,8 @@ static int mtk_uart_apdma_alloc_chan_resources(struct dma_chan *chan)
 			mtk_uart_apdma_read(c, VFF_LEN));
 	}
 
-	if (mtkd->support_bits > VFF_ORI_ADDR_BITS_NUM)
-		mtk_uart_apdma_write(c, VFF_4G_SUPPORT, VFF_4G_SUPPORT_CLR_B);
+	if (mtkd->support_33bits)
+		mtk_uart_apdma_write(c, VFF_ADDR2, VFF_ADDR2_CLR_B);
 
 err_pm:
 	return ret;
@@ -1038,9 +1035,8 @@ static int mtk_uart_apdma_device_pause(struct dma_chan *chan)
 	mtk_uart_apdma_write(c, VFF_EN, VFF_EN_CLR_B);
 	mtk_uart_apdma_write(c, VFF_INT_EN, VFF_INT_EN_CLR_B);
 
-	synchronize_irq(c->irq);
-
 	spin_unlock_irqrestore(&c->vc.lock, flags);
+	synchronize_irq(c->irq);
 
 	return 0;
 }
@@ -1154,6 +1150,7 @@ static int mtk_uart_apdma_probe(struct platform_device *pdev)
 
 	dev_info(&pdev->dev,
 			"DMA address bits: %d\n",  mtkd->support_bits);
+	mtkd->support_33bits = (mtkd->support_bits > 32);
 	rc = dma_set_mask_and_coherent(&pdev->dev,
 			DMA_BIT_MASK(mtkd->support_bits));
 	if (rc)

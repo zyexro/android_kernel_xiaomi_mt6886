@@ -105,10 +105,12 @@ static void otx2_get_egress_burst_cfg(struct otx2_nic *nic, u32 burst,
 	if (burst) {
 		*burst_exp = ilog2(burst) ? ilog2(burst) - 1 : 0;
 		tmp = burst - rounddown_pow_of_two(burst);
-		if (burst < max_mantissa)
+		if (burst <= max_mantissa) {
 			*burst_mantissa = tmp * 2;
-		else
+		} else {
+			WARN_ON(*burst_exp < 7);
 			*burst_mantissa = tmp / (1ULL << (*burst_exp - 7));
+		}
 	} else {
 		*burst_exp = MAX_BURST_EXPONENT;
 		*burst_mantissa = max_mantissa;
@@ -534,6 +536,21 @@ static int otx2_tc_prepare_flow(struct otx2_nic *nic, struct otx2_tc_flow *node,
 			netdev_err(nic->netdev, "vlan tpid 0x%x not supported\n",
 				   ntohs(match.key->vlan_tpid));
 			return -EOPNOTSUPP;
+		}
+
+		if (!match.mask->vlan_id) {
+			struct flow_action_entry *act;
+			int i;
+
+			flow_action_for_each(i, act, &rule->action) {
+				if (act->id == FLOW_ACTION_DROP) {
+					netdev_err(nic->netdev,
+						   "vlan tpid 0x%x with vlan_id %d is not supported for DROP rule.\n",
+						   ntohs(match.key->vlan_tpid),
+						   match.key->vlan_id);
+					return -EOPNOTSUPP;
+				}
+			}
 		}
 
 		if (match.mask->vlan_id ||

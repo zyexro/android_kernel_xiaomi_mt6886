@@ -56,8 +56,8 @@
 
 #include <asm/irq.h>
 
-#define TX_WORK_PER_LOOP  64
-#define RX_WORK_PER_LOOP  64
+#define TX_WORK_PER_LOOP  NAPI_POLL_WEIGHT
+#define RX_WORK_PER_LOOP  NAPI_POLL_WEIGHT
 
 /*
  * Hardware access:
@@ -5869,7 +5869,7 @@ static int nv_probe(struct pci_dev *pci_dev, const struct pci_device_id *id)
 	else
 		dev->netdev_ops = &nv_netdev_ops_optimized;
 
-	netif_napi_add(dev, &np->napi, nv_napi_poll, RX_WORK_PER_LOOP);
+	netif_napi_add(dev, &np->napi, nv_napi_poll, NAPI_POLL_WEIGHT);
 	dev->ethtool_ops = &ops;
 	dev->watchdog_timeo = NV_WATCHDOG_TIMEO;
 
@@ -6129,6 +6129,7 @@ static int nv_probe(struct pci_dev *pci_dev, const struct pci_device_id *id)
 	return 0;
 
 out_error:
+	nv_mgmt_release_sema(dev);
 	if (phystate_orig)
 		writel(phystate|NVREG_ADAPTCTL_RUNNING, base + NvRegAdapterControl);
 out_freering:
@@ -6189,9 +6190,9 @@ static void nv_remove(struct pci_dev *pci_dev)
 	struct net_device *dev = pci_get_drvdata(pci_dev);
 	struct fe_priv *np = netdev_priv(dev);
 
-	free_percpu(np->txrx_stats);
-
 	unregister_netdev(dev);
+
+	free_percpu(np->txrx_stats);
 
 	nv_restore_mac_addr(pci_dev);
 
@@ -6223,7 +6224,7 @@ static int nv_suspend(struct device *device)
 	netif_device_detach(dev);
 
 	/* save non-pci configuration space */
-	for (i = 0; i <= np->register_size/sizeof(u32); i++)
+	for (i = 0; i < np->register_size/sizeof(u32); i++)
 		np->saved_config_space[i] = readl(base + i*sizeof(u32));
 
 	return 0;
@@ -6238,7 +6239,7 @@ static int nv_resume(struct device *device)
 	int i, rc = 0;
 
 	/* restore non-pci configuration space */
-	for (i = 0; i <= np->register_size/sizeof(u32); i++)
+	for (i = 0; i < np->register_size/sizeof(u32); i++)
 		writel(np->saved_config_space[i], base+i*sizeof(u32));
 
 	if (np->driver_data & DEV_NEED_MSI_FIX)

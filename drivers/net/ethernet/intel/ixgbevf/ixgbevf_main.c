@@ -1220,6 +1220,7 @@ static int ixgbevf_clean_rx_irq(struct ixgbevf_q_vector *q_vector,
 		    ether_addr_equal(rx_ring->netdev->dev_addr,
 				     eth_hdr(skb)->h_source)) {
 			dev_kfree_skb_irq(skb);
+			skb = NULL;
 			continue;
 		}
 
@@ -2541,7 +2542,7 @@ void ixgbevf_reset(struct ixgbevf_adapter *adapter)
 	}
 
 	if (is_valid_ether_addr(adapter->hw.mac.addr)) {
-		ether_addr_copy(netdev->dev_addr, adapter->hw.mac.addr);
+		eth_hw_addr_set(netdev, adapter->hw.mac.addr);
 		ether_addr_copy(netdev->perm_addr, adapter->hw.mac.addr);
 	}
 
@@ -3055,7 +3056,7 @@ static int ixgbevf_sw_init(struct ixgbevf_adapter *adapter)
 		else if (is_zero_ether_addr(adapter->hw.mac.addr))
 			dev_info(&pdev->dev,
 				 "MAC address not assigned by administrator.\n");
-		ether_addr_copy(netdev->dev_addr, hw->mac.addr);
+		eth_hw_addr_set(netdev, hw->mac.addr);
 	}
 
 	if (!is_valid_ether_addr(netdev->dev_addr)) {
@@ -4232,7 +4233,7 @@ static int ixgbevf_set_mac(struct net_device *netdev, void *p)
 
 	ether_addr_copy(hw->mac.addr, addr->sa_data);
 	ether_addr_copy(hw->mac.perm_addr, addr->sa_data);
-	ether_addr_copy(netdev->dev_addr, addr->sa_data);
+	eth_hw_addr_set(netdev, addr->sa_data);
 
 	return 0;
 }
